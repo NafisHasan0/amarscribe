@@ -262,16 +262,16 @@ def transcribe_audio(audio_buffer: io.BytesIO, api_key: str, language: str) -> d
     """
     Send audio buffer to ElevenLabs Scribe API for transcription.
     """
-    from elevenlabs import ElevenLabs
+    from elevenlabs.client import ElevenLabs
     
     client = ElevenLabs(api_key=api_key)
     
     # Reset buffer position
     audio_buffer.seek(0)
     
-    # Call the transcribe endpoint
+    # Call the transcribe endpoint with correct syntax
     result = client.speech_to_text.convert(
-        file=("audio.mp3", audio_buffer, "audio/mpeg"),
+        file=audio_buffer,
         model_id="scribe_v1",
         language_code=language,
         tag_audio_events=True,
