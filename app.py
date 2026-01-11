@@ -258,6 +258,21 @@ def extract_audio_to_buffer(video_file) -> io.BytesIO:
             os.unlink(temp_video_path)
 
 
+def validate_api_key(api_key: str) -> tuple[bool, str]:
+    """
+    Validate ElevenLabs API key by making a simple API call.
+    Returns (is_valid, error_message)
+    """
+    try:
+        from elevenlabs.client import ElevenLabs
+        client = ElevenLabs(api_key=api_key)
+        # Try to list models - a simple API call to verify the key
+        client.models.list()
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def transcribe_audio(audio_buffer: io.BytesIO, api_key: str, language: str) -> dict:
     """
     Send audio buffer to ElevenLabs Scribe API for transcription.
@@ -320,6 +335,17 @@ def main():
             placeholder="Enter your API key...",
             help="Get your API key from elevenlabs.io"
         )
+        
+        # Validate API key button
+        if api_key:
+            if st.button("🔑 Validate API Key"):
+                with st.spinner("Validating..."):
+                    is_valid, error_msg = validate_api_key(api_key)
+                    if is_valid:
+                        st.success("✅ API Key is valid!")
+                    else:
+                        st.error(f"❌ Invalid API Key")
+                        st.code(error_msg, language=None)
         
         # Language selection
         language_options = {
@@ -400,12 +426,14 @@ def main():
                         result = transcribe_audio(audio_buffer, api_key, language_code)
                     except Exception as api_error:
                         error_msg = str(api_error).lower()
-                        if "invalid" in error_msg and "key" in error_msg:
-                            st.error("❌ Invalid API Key. Please check your ElevenLabs API key.")
-                        elif "unauthorized" in error_msg or "401" in error_msg:
-                            st.error("❌ Invalid API Key. Please verify your ElevenLabs API key is correct.")
-                        else:
-                            st.error(f"❌ Transcription Error: {api_error}")
+                        st.error("❌ Transcription Error")
+                        st.code(str(api_error), language=None)
+                        
+                        # Provide helpful hints
+                        if "invalid" in error_msg or "unauthorized" in error_msg or "401" in error_msg:
+                            st.info("💡 **Hint:** Please verify your ElevenLabs API key at https://elevenlabs.io/app/settings/api-keys")
+                        elif "quota" in error_msg or "limit" in error_msg:
+                            st.info("💡 **Hint:** You may have exceeded your API quota. Check your ElevenLabs account.")
                         return
                 
                 status_placeholder.success("✅ Transcription Complete!")
