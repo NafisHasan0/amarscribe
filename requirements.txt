@@ -1,5 +1,5 @@
 streamlit
 moviepy==1.0.3
-openai-whisper
+soniox
 torch
 torchaudio
