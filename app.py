@@ -1,136 +1,280 @@
 """
-AmarScribe Pro – Advanced Bengali Video-to-Text Utility
-A Streamlit application for transcribing Bengali videos with word-level timestamps.
-Uses ElevenLabs Scribe v2 API with RAM-only processing.
+AmarScribe Ultimate - Free, Unlimited Bengali Transcription
+Uses OpenAI Whisper for local, unlimited transcription with zero API costs.
 """
 
 import streamlit as st
 import io
 import tempfile
 import os
-from datetime import timedelta
+from pathlib import Path
 
-# Page configuration
+# Page configuration with Bengali-inspired theming
 st.set_page_config(
-    page_title="AmarScribe Pro",
-    page_icon="🎙️",
+    page_title="AmarScribe Ultimate",
+    page_icon="🎬",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
-# Custom CSS for clean, professional look with readable Bengali text
+# Custom CSS for a distinctive Bengali-inspired aesthetic
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Tiro+Bangla:ital@0;1&family=Playfair+Display:wght@400;600;700&family=Source+Sans+3:wght@300;400;600&display=swap');
+    
+    /* Root variables */
+    :root {
+        --bg-primary: #0d1117;
+        --bg-secondary: #161b22;
+        --bg-tertiary: #21262d;
+        --accent-gold: #d4a853;
+        --accent-rust: #c9513d;
+        --accent-teal: #3fb9a8;
+        --text-primary: #f0f3f6;
+        --text-secondary: #8b949e;
+        --border-color: #30363d;
+    }
+    
     /* Main container styling */
-    .main .block-container {
-        padding-top: 2rem;
-        max-width: 1200px;
+    .stApp {
+        background: linear-gradient(135deg, #0d1117 0%, #161b22 50%, #1a1f26 100%);
     }
     
     /* Header styling */
     .main-header {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: #1E3A5F;
-        margin-bottom: 0.5rem;
-    }
-    
-    .sub-header {
-        font-size: 1.1rem;
-        color: #6B7280;
+        text-align: center;
+        padding: 2rem 0 1rem 0;
+        border-bottom: 1px solid var(--border-color);
         margin-bottom: 2rem;
     }
     
-    /* Transcript feed styling */
-    .transcript-container {
-        background: #FAFBFC;
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin-top: 1rem;
+    .main-header h1 {
+        font-family: 'Playfair Display', serif;
+        font-size: 3.5rem;
+        font-weight: 700;
+        background: linear-gradient(135deg, #d4a853 0%, #f0c674 50%, #d4a853 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        margin-bottom: 0.5rem;
+        letter-spacing: -0.02em;
     }
     
-    .transcript-line {
-        padding: 1rem;
-        margin-bottom: 0.75rem;
-        background: white;
-        border-radius: 8px;
-        border-left: 4px solid #3B82F6;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    .main-header .subtitle {
+        font-family: 'Source Sans 3', sans-serif;
+        font-size: 1.1rem;
+        color: var(--text-secondary);
+        font-weight: 300;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
     }
     
-    .timestamp {
-        display: inline-block;
-        background: #EFF6FF;
-        color: #1D4ED8;
-        padding: 0.25rem 0.5rem;
-        border-radius: 4px;
-        font-family: 'Consolas', monospace;
-        font-size: 0.85rem;
-        font-weight: 600;
-        margin-right: 0.75rem;
-        cursor: pointer;
-    }
-    
-    .timestamp:hover {
-        background: #DBEAFE;
-    }
-    
-    .speaker-name {
-        color: #059669;
-        font-weight: 600;
-        font-size: 0.9rem;
-        margin-right: 0.5rem;
-    }
-    
-    .bengali-text {
-        font-size: 1.35rem;
-        line-height: 2;
-        color: #1F2937;
-        font-family: 'Noto Sans Bengali', 'Kalpurush', sans-serif;
-        display: block;
+    .bengali-accent {
+        font-family: 'Tiro Bangla', serif;
+        color: var(--accent-teal);
+        font-size: 1.3rem;
         margin-top: 0.5rem;
     }
     
-    /* Sidebar styling */
-    .sidebar .sidebar-content {
-        background: #F8FAFC;
+    /* Feature badges */
+    .feature-badges {
+        display: flex;
+        justify-content: center;
+        gap: 1rem;
+        margin-top: 1.5rem;
+        flex-wrap: wrap;
     }
     
-    /* Progress styling */
-    .stSpinner > div {
-        border-color: #3B82F6;
+    .badge {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-color);
+        padding: 0.5rem 1rem;
+        border-radius: 2rem;
+        font-family: 'Source Sans 3', sans-serif;
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
     }
     
-    /* Button styling */
-    .stDownloadButton > button {
-        background: #3B82F6;
-        color: white;
-        border: none;
-        padding: 0.75rem 1.5rem;
-        border-radius: 8px;
+    .badge.gold { border-color: var(--accent-gold); color: var(--accent-gold); }
+    .badge.teal { border-color: var(--accent-teal); color: var(--accent-teal); }
+    .badge.rust { border-color: var(--accent-rust); color: var(--accent-rust); }
+    
+    /* Upload section */
+    .upload-section {
+        background: var(--bg-secondary);
+        border: 2px dashed var(--border-color);
+        border-radius: 1rem;
+        padding: 3rem 2rem;
+        text-align: center;
+        margin: 2rem 0;
+        transition: all 0.3s ease;
+    }
+    
+    .upload-section:hover {
+        border-color: var(--accent-gold);
+        box-shadow: 0 0 30px rgba(212, 168, 83, 0.1);
+    }
+    
+    /* Transcript container */
+    .transcript-container {
+        background: var(--bg-secondary);
+        border: 1px solid var(--border-color);
+        border-radius: 1rem;
+        padding: 2rem;
+        margin: 2rem 0;
+        max-height: 500px;
+        overflow-y: auto;
+    }
+    
+    .transcript-chunk {
+        display: flex;
+        gap: 1rem;
+        padding: 1rem;
+        border-bottom: 1px solid var(--border-color);
+        transition: background 0.2s ease;
+    }
+    
+    .transcript-chunk:hover {
+        background: var(--bg-tertiary);
+    }
+    
+    .timestamp {
+        font-family: 'Source Sans 3', monospace;
+        color: var(--accent-teal);
+        font-size: 0.9rem;
+        white-space: nowrap;
+        padding: 0.25rem 0.75rem;
+        background: rgba(63, 185, 168, 0.1);
+        border-radius: 0.5rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+    }
+    
+    .timestamp:hover {
+        background: rgba(63, 185, 168, 0.2);
+        transform: scale(1.05);
+    }
+    
+    .transcript-text {
+        font-family: 'Tiro Bangla', serif;
+        font-size: 1.2rem;
+        color: var(--text-primary);
+        line-height: 1.8;
+    }
+    
+    /* Stats display */
+    .stats-row {
+        display: flex;
+        justify-content: center;
+        gap: 2rem;
+        margin: 1.5rem 0;
+        flex-wrap: wrap;
+    }
+    
+    .stat-item {
+        text-align: center;
+        padding: 1rem 2rem;
+        background: var(--bg-tertiary);
+        border-radius: 0.75rem;
+        border: 1px solid var(--border-color);
+    }
+    
+    .stat-value {
+        font-family: 'Playfair Display', serif;
+        font-size: 2rem;
+        color: var(--accent-gold);
         font-weight: 600;
     }
     
-    .stDownloadButton > button:hover {
-        background: #2563EB;
+    .stat-label {
+        font-family: 'Source Sans 3', sans-serif;
+        font-size: 0.85rem;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
     }
     
-    /* Info box */
+    /* Button styling */
+    .stButton > button {
+        background: linear-gradient(135deg, var(--accent-gold) 0%, #c49843 100%);
+        color: #0d1117;
+        font-family: 'Source Sans 3', sans-serif;
+        font-weight: 600;
+        border: none;
+        padding: 0.75rem 2rem;
+        border-radius: 0.5rem;
+        font-size: 1rem;
+        transition: all 0.3s ease;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(212, 168, 83, 0.3);
+    }
+    
+    /* Download button */
+    .stDownloadButton > button {
+        background: linear-gradient(135deg, var(--accent-teal) 0%, #2d9488 100%);
+        color: white;
+        font-family: 'Source Sans 3', sans-serif;
+        font-weight: 600;
+        border: none;
+        padding: 0.75rem 2rem;
+        border-radius: 0.5rem;
+    }
+    
+    /* Select box styling */
+    .stSelectbox > div > div {
+        background: var(--bg-tertiary);
+        border-color: var(--border-color);
+    }
+    
+    /* Progress styling */
+    .stProgress > div > div {
+        background: linear-gradient(90deg, var(--accent-gold), var(--accent-teal));
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* File uploader */
+    .stFileUploader > div {
+        background: var(--bg-tertiary);
+        border: 2px dashed var(--border-color);
+        border-radius: 1rem;
+    }
+    
+    .stFileUploader > div:hover {
+        border-color: var(--accent-gold);
+    }
+    
+    /* Spinner */
+    .stSpinner > div {
+        border-top-color: var(--accent-gold) !important;
+    }
+    
+    /* Info boxes */
     .info-box {
-        background: #F0FDF4;
-        border: 1px solid #86EFAC;
-        border-radius: 8px;
-        padding: 1rem;
+        background: rgba(63, 185, 168, 0.1);
+        border-left: 4px solid var(--accent-teal);
+        padding: 1rem 1.5rem;
+        border-radius: 0 0.5rem 0.5rem 0;
         margin: 1rem 0;
     }
     
-    /* Error styling */
-    .error-box {
-        background: #FEF2F2;
-        border: 1px solid #FECACA;
-        border-radius: 8px;
-        padding: 1rem;
-        color: #991B1B;
+    .warning-box {
+        background: rgba(212, 168, 83, 0.1);
+        border-left: 4px solid var(--accent-gold);
+        padding: 1rem 1.5rem;
+        border-radius: 0 0.5rem 0.5rem 0;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -138,413 +282,311 @@ st.markdown("""
 
 def format_timestamp(seconds: float) -> str:
     """Convert seconds to MM:SS format."""
-    td = timedelta(seconds=seconds)
-    total_seconds = int(td.total_seconds())
-    minutes = total_seconds // 60
-    secs = total_seconds % 60
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
     return f"{minutes:02d}:{secs:02d}"
 
 
-def chunk_words_into_sentences(words: list, max_words: int = 10) -> list:
-    """
-    Group words into meaningful chunks based on punctuation or word count.
-    Returns list of dicts with start_time, end_time, speaker, and text.
-    """
-    if not words:
-        return []
-    
-    chunks = []
-    current_chunk = {
-        "words": [],
-        "start_time": None,
-        "end_time": None,
-        "speaker": None
-    }
-    
-    sentence_enders = {"।", "?", "!", ".", "।।"}
-    
-    for word_info in words:
-        word_text = word_info.get("text", "").strip()
-        start = word_info.get("start", 0)
-        end = word_info.get("end", 0)
-        speaker = word_info.get("speaker", "Speaker")
-        
-        if not word_text:
-            continue
-        
-        # Initialize chunk timing
-        if current_chunk["start_time"] is None:
-            current_chunk["start_time"] = start
-            current_chunk["speaker"] = speaker
-        
-        current_chunk["words"].append(word_text)
-        current_chunk["end_time"] = end
-        
-        # Check if we should end this chunk
-        is_sentence_end = any(word_text.endswith(p) for p in sentence_enders)
-        reached_max_words = len(current_chunk["words"]) >= max_words
-        
-        if is_sentence_end or reached_max_words:
-            chunks.append({
-                "text": " ".join(current_chunk["words"]),
-                "start_time": current_chunk["start_time"],
-                "end_time": current_chunk["end_time"],
-                "speaker": current_chunk["speaker"] or "Speaker"
-            })
-            current_chunk = {
-                "words": [],
-                "start_time": None,
-                "end_time": None,
-                "speaker": None
-            }
-    
-    # Don't forget remaining words
-    if current_chunk["words"]:
-        chunks.append({
-            "text": " ".join(current_chunk["words"]),
-            "start_time": current_chunk["start_time"],
-            "end_time": current_chunk["end_time"],
-            "speaker": current_chunk["speaker"] or "Speaker"
-        })
-    
-    return chunks
-
-
-def extract_audio_to_buffer(video_file) -> io.BytesIO:
-    """
-    Extract audio from video file directly to BytesIO buffer.
-    Uses a temporary file for video (required by MoviePy) but audio stays in RAM.
-    """
+def extract_audio_from_video(video_bytes: bytes, file_extension: str) -> bytes:
+    """Extract audio from video using MoviePy, returning audio bytes."""
     from moviepy.editor import VideoFileClip
     
-    audio_buffer = io.BytesIO()
-    temp_video_path = None
+    # Write video to temp file (MoviePy needs file path)
+    with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as tmp_video:
+        tmp_video.write(video_bytes)
+        tmp_video_path = tmp_video.name
     
     try:
-        # MoviePy needs a file path, so we use a temp file for the video only
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
-            tmp.write(video_file.read())
-            temp_video_path = tmp.name
-        
         # Extract audio
-        video = VideoFileClip(temp_video_path)
+        video = VideoFileClip(tmp_video_path)
         
-        # Export audio to a temporary file first, then read into buffer
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_audio:
-            temp_audio_path = tmp_audio.name
+        # Create temp file for audio
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_audio:
+            tmp_audio_path = tmp_audio.name
         
+        # Write audio
         video.audio.write_audiofile(
-            temp_audio_path,
-            codec='mp3',
-            bitrate='128k',
+            tmp_audio_path, 
+            fps=16000,  # Whisper expects 16kHz
+            nbytes=2,
+            codec='pcm_s16le',
             verbose=False,
             logger=None
         )
         video.close()
         
-        # Read audio into buffer
-        with open(temp_audio_path, 'rb') as f:
-            audio_buffer.write(f.read())
+        # Read audio bytes
+        with open(tmp_audio_path, 'rb') as f:
+            audio_bytes = f.read()
         
-        # Clean up temp audio file
-        os.unlink(temp_audio_path)
-        
-        audio_buffer.seek(0)
-        return audio_buffer
+        return audio_bytes, tmp_audio_path
         
     finally:
-        # Clean up temp video file
-        if temp_video_path and os.path.exists(temp_video_path):
-            os.unlink(temp_video_path)
+        # Clean up video temp file
+        if os.path.exists(tmp_video_path):
+            os.unlink(tmp_video_path)
 
 
-def validate_api_key(api_key: str) -> tuple[bool, str]:
-    """
-    Validate ElevenLabs API key by making a simple API call.
-    Returns (is_valid, error_message)
-    """
-    try:
-        from elevenlabs.client import ElevenLabs
-        client = ElevenLabs(api_key=api_key)
-        # Try to list models - a simple API call to verify the key
-        client.models.list()
-        return True, ""
-    except Exception as e:
-        return False, str(e)
-
-
-def transcribe_audio(audio_buffer: io.BytesIO, api_key: str, language: str) -> dict:
-    """
-    Send audio buffer to ElevenLabs Scribe API for transcription.
-    """
-    from elevenlabs.client import ElevenLabs
+def transcribe_with_whisper(audio_path: str, model_name: str, language: str) -> dict:
+    """Transcribe audio using local Whisper model."""
+    import whisper
     
-    client = ElevenLabs(api_key=api_key)
+    # Load model
+    model = whisper.load_model(model_name)
     
-    # Reset buffer position
-    audio_buffer.seek(0)
-    
-    # Call the transcribe endpoint with correct syntax
-    result = client.speech_to_text.convert(
-        file=audio_buffer,
-        model_id="scribe_v1",
-        language_code=language,
-        tag_audio_events=True,
-        diarize=True
+    # Transcribe with word timestamps
+    result = model.transcribe(
+        audio_path,
+        language=language,
+        task="transcribe",
+        word_timestamps=True,
+        verbose=False
     )
     
     return result
 
 
-def format_transcript_for_download(chunks: list) -> str:
-    """Format transcript chunks for TXT download."""
-    lines = []
-    lines.append("=" * 60)
-    lines.append("AmarScribe Pro - Transcript Export")
-    lines.append("=" * 60)
-    lines.append("")
-    
-    for chunk in chunks:
-        timestamp = format_timestamp(chunk["start_time"])
-        speaker = chunk["speaker"]
-        text = chunk["text"]
-        lines.append(f"[{timestamp}] {speaker}: {text}")
-        lines.append("")
-    
-    lines.append("=" * 60)
-    lines.append("End of Transcript")
-    lines.append("=" * 60)
-    
-    return "\n".join(lines)
-
-
 def main():
     # Header
-    st.markdown('<h1 class="main-header">🎙️ AmarScribe Pro</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Advanced Bengali Video-to-Text Utility with Word-Level Timestamps</p>', unsafe_allow_html=True)
+    st.markdown("""
+    <div class="main-header">
+        <h1>AmarScribe Ultimate</h1>
+        <p class="subtitle">Free • Unlimited • Local Processing</p>
+        <p class="bengali-accent">আমার স্ক্রাইব — বাংলা ট্রান্সক্রিপশন</p>
+        <div class="feature-badges">
+            <span class="badge gold">✨ Zero API Cost</span>
+            <span class="badge teal">🔒 100% Private</span>
+            <span class="badge rust">⚡ Powered by Whisper</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
     
-    # Sidebar configuration
-    with st.sidebar:
-        st.markdown("### ⚙️ Configuration")
-        st.markdown("---")
-        
-        # API Key input
-        api_key = st.text_input(
-            "ElevenLabs API Key",
-            type="password",
-            placeholder="Enter your API key...",
-            help="Get your API key from elevenlabs.io"
-        )
-        
-        # Validate API key button
-        if api_key:
-            if st.button("🔑 Validate API Key"):
-                with st.spinner("Validating..."):
-                    is_valid, error_msg = validate_api_key(api_key)
-                    if is_valid:
-                        st.success("✅ API Key is valid!")
-                    else:
-                        st.error(f"❌ Invalid API Key")
-                        st.code(error_msg, language=None)
-        
-        # Language selection
-        language_options = {
-            "Bengali": "bn",
-            "Hindi": "hi",
-            "English": "en",
-            "Tamil": "ta",
-            "Telugu": "te",
-            "Marathi": "mr",
-            "Gujarati": "gu",
-            "Kannada": "kn",
-            "Malayalam": "ml",
-            "Punjabi": "pa",
-            "Urdu": "ur"
-        }
-        
-        selected_language = st.selectbox(
-            "Target Language",
-            options=list(language_options.keys()),
+    # Configuration columns
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        target_language = st.selectbox(
+            "🌐 Target Language",
+            options=["Bengali", "English", "Hindi", "Arabic", "Chinese", "Spanish", "French", "German", "Japanese", "Korean"],
             index=0,
             help="Select the primary language in your video"
         )
-        
-        language_code = language_options[selected_language]
-        
-        st.markdown("---")
-        st.markdown("### 📝 About")
-        st.markdown("""
-        **AmarScribe Pro** uses ElevenLabs Scribe v2 
-        for highly accurate Bengali transcription with:
-        
-        - 🎯 Word-level timestamps
-        - 👥 Speaker diarization
-        - 🔒 RAM-only processing
-        - 📱 Clean, readable output
-        """)
     
-    # Main content area
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.markdown("### 📤 Upload Video")
-        uploaded_file = st.file_uploader(
-            "Choose a video file",
-            type=['mp4', 'mov', 'avi', 'mkv', 'webm', 'm4v'],
-            help="Supported formats: MP4, MOV, AVI, MKV, WebM, M4V"
-        )
+    # Map language names to Whisper codes
+    language_codes = {
+        "Bengali": "bn",
+        "English": "en", 
+        "Hindi": "hi",
+        "Arabic": "ar",
+        "Chinese": "zh",
+        "Spanish": "es",
+        "French": "fr",
+        "German": "de",
+        "Japanese": "ja",
+        "Korean": "ko"
+    }
     
     with col2:
-        st.markdown("### 📊 Status")
-        status_placeholder = st.empty()
-        status_placeholder.info("Waiting for video upload...")
+        model_size = st.selectbox(
+            "🧠 Model Size",
+            options=["tiny", "base", "small", "medium", "large"],
+            index=2,  # Default to "small"
+            help="Larger models are more accurate but slower"
+        )
     
-    # Process video when uploaded
+    # Model info
+    model_info = {
+        "tiny": ("~1GB VRAM", "Fastest, least accurate"),
+        "base": ("~1GB VRAM", "Fast, basic accuracy"),
+        "small": ("~2GB VRAM", "Balanced speed/accuracy"),
+        "medium": ("~5GB VRAM", "High accuracy"),
+        "large": ("~10GB VRAM", "Best accuracy, slowest")
+    }
+    
+    st.markdown(f"""
+    <div class="info-box">
+        <strong>{model_size.capitalize()} Model:</strong> {model_info[model_size][0]} • {model_info[model_size][1]}
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # File uploader
+    st.markdown("### 📤 Upload Your Video")
+    uploaded_file = st.file_uploader(
+        "Drag and drop or click to upload",
+        type=["mp4", "mov", "avi", "mkv", "webm"],
+        help="Supported formats: MP4, MOV, AVI, MKV, WEBM"
+    )
+    
+    # Initialize session state
+    if 'transcript_result' not in st.session_state:
+        st.session_state.transcript_result = None
+    if 'transcript_text' not in st.session_state:
+        st.session_state.transcript_text = ""
+    
     if uploaded_file is not None:
-        if not api_key:
-            st.error("⚠️ Please enter your ElevenLabs API Key in the sidebar.")
-            return
-        
         # Display file info
         file_size_mb = uploaded_file.size / (1024 * 1024)
-        st.markdown(f"**File:** {uploaded_file.name} ({file_size_mb:.1f} MB)")
+        st.markdown(f"""
+        <div class="stats-row">
+            <div class="stat-item">
+                <div class="stat-value">{uploaded_file.name[:20]}{'...' if len(uploaded_file.name) > 20 else ''}</div>
+                <div class="stat-label">File Name</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">{file_size_mb:.1f} MB</div>
+                <div class="stat-label">File Size</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
         
         # Transcribe button
-        if st.button("🚀 Start Transcription", type="primary", use_container_width=True):
+        if st.button("🎯 Start Transcription", use_container_width=True):
             try:
+                # Get file extension
+                file_ext = Path(uploaded_file.name).suffix.lower()
+                
+                # Read video bytes into memory
+                video_bytes = uploaded_file.read()
+                
                 # Step 1: Extract audio
-                status_placeholder.warning("🎵 Extracting audio from video...")
+                with st.status("🎵 Extracting audio from video...", expanded=True) as status:
+                    st.write("Processing video file...")
+                    audio_bytes, audio_path = extract_audio_from_video(video_bytes, file_ext)
+                    st.write("✅ Audio extracted successfully!")
+                    status.update(label="Audio extraction complete!", state="complete")
                 
-                with st.spinner("Extracting audio... This may take a moment."):
-                    audio_buffer = extract_audio_to_buffer(uploaded_file)
-                
-                status_placeholder.warning("🔄 Analyzing Bengali Audio... This may take a moment.")
-                
-                # Step 2: Transcribe
-                with st.spinner("Analyzing Bengali Audio... This may take a moment."):
-                    try:
-                        result = transcribe_audio(audio_buffer, api_key, language_code)
-                    except Exception as api_error:
-                        error_msg = str(api_error).lower()
-                        st.error("❌ Transcription Error")
-                        st.code(str(api_error), language=None)
-                        
-                        # Provide helpful hints
-                        if "invalid" in error_msg or "unauthorized" in error_msg or "401" in error_msg:
-                            st.info("💡 **Hint:** Please verify your ElevenLabs API key at https://elevenlabs.io/app/settings/api-keys")
-                        elif "quota" in error_msg or "limit" in error_msg:
-                            st.info("💡 **Hint:** You may have exceeded your API quota. Check your ElevenLabs account.")
-                        return
-                
-                status_placeholder.success("✅ Transcription Complete!")
-                
-                # Step 3: Process and display results
-                st.markdown("---")
-                st.markdown("### 📜 Transcript Feed")
-                
-                # Get words from result
-                words = []
-                if hasattr(result, 'words') and result.words:
-                    words = [
-                        {
-                            "text": w.text if hasattr(w, 'text') else str(w),
-                            "start": w.start if hasattr(w, 'start') else 0,
-                            "end": w.end if hasattr(w, 'end') else 0,
-                            "speaker": getattr(w, 'speaker', 'Speaker')
-                        }
-                        for w in result.words
-                    ]
-                
-                # If no word-level data, fall back to full text
-                if not words and hasattr(result, 'text'):
-                    # Create a single chunk from full text
-                    chunks = [{
-                        "text": result.text,
-                        "start_time": 0,
-                        "end_time": 0,
-                        "speaker": "Speaker"
-                    }]
-                else:
-                    # Chunk words into meaningful segments
-                    chunks = chunk_words_into_sentences(words, max_words=10)
-                
-                if not chunks:
-                    st.warning("No transcript content was generated. The audio may be unclear or empty.")
-                    return
-                
-                # Display transcript
-                st.markdown('<div class="transcript-container">', unsafe_allow_html=True)
-                
-                for i, chunk in enumerate(chunks):
-                    timestamp = format_timestamp(chunk["start_time"])
-                    speaker = chunk["speaker"] or "Speaker"
-                    text = chunk["text"]
+                # Step 2: Load model and transcribe
+                with st.status(f"🧠 Loading Whisper {model_size} model...", expanded=True) as status:
+                    st.write("This may take a moment on first run as the model downloads...")
                     
-                    st.markdown(f"""
-                    <div class="transcript-line">
-                        <span class="timestamp">[{timestamp}]</span>
-                        <span class="speaker-name">{speaker}:</span>
-                        <span class="bengali-text">{text}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                
-                st.markdown('</div>', unsafe_allow_html=True)
-                
-                # Export section
-                st.markdown("---")
-                st.markdown("### 💾 Export")
-                
-                transcript_text = format_transcript_for_download(chunks)
-                
-                col_export1, col_export2 = st.columns([1, 2])
-                with col_export1:
-                    st.download_button(
-                        label="📥 Download Transcript as TXT",
-                        data=transcript_text.encode('utf-8'),
-                        file_name=f"{uploaded_file.name.rsplit('.', 1)[0]}_transcript.txt",
-                        mime="text/plain",
-                        use_container_width=True
+                    progress_bar = st.progress(0)
+                    st.write("📥 Downloading/loading model...")
+                    progress_bar.progress(30)
+                    
+                    # Perform transcription
+                    st.write("🎤 Transcribing audio...")
+                    progress_bar.progress(50)
+                    
+                    result = transcribe_with_whisper(
+                        audio_path,
+                        model_size,
+                        language_codes[target_language]
                     )
+                    
+                    progress_bar.progress(100)
+                    st.write("✅ Transcription complete!")
+                    status.update(label="Transcription complete!", state="complete")
                 
-                with col_export2:
-                    st.markdown(f"""
-                    <div class="info-box">
-                        <strong>✓ Transcription Summary:</strong><br>
-                        • Total segments: {len(chunks)}<br>
-                        • Language: {selected_language}<br>
-                        • Processing: RAM-only (zero disk storage)
-                    </div>
-                    """, unsafe_allow_html=True)
+                # Clean up audio temp file
+                if os.path.exists(audio_path):
+                    os.unlink(audio_path)
+                
+                # Store results
+                st.session_state.transcript_result = result
+                
+                # Build formatted transcript
+                transcript_lines = []
+                for segment in result.get("segments", []):
+                    timestamp = format_timestamp(segment["start"])
+                    text = segment["text"].strip()
+                    transcript_lines.append(f"[{timestamp}] {text}")
+                
+                st.session_state.transcript_text = "\n\n".join(transcript_lines)
                 
             except Exception as e:
-                error_message = str(e)
-                
-                # Handle specific error types
-                if "codec" in error_message.lower() or "format" in error_message.lower():
-                    st.markdown("""
-                    <div class="error-box">
-                        <strong>❌ Unsupported Video Format</strong><br>
-                        The video format could not be processed. Please try:
-                        <ul>
-                            <li>Converting to MP4 format</li>
-                            <li>Using a different video file</li>
-                            <li>Checking if the file is corrupted</li>
-                        </ul>
-                    </div>
-                    """, unsafe_allow_html=True)
-                else:
-                    st.error(f"❌ Error: {error_message}")
-                
-                status_placeholder.error("❌ Processing failed")
+                st.error(f"❌ Error during transcription: {str(e)}")
+                st.markdown("""
+                <div class="warning-box">
+                    <strong>Troubleshooting Tips:</strong><br>
+                    • Ensure ffmpeg is installed<br>
+                    • Try a smaller model size<br>
+                    • Check that the video file isn't corrupted
+                </div>
+                """, unsafe_allow_html=True)
+    
+    # Display results
+    if st.session_state.transcript_result:
+        result = st.session_state.transcript_result
+        
+        st.markdown("---")
+        st.markdown("### 📝 Transcript")
+        
+        # Stats
+        total_duration = result.get("segments", [{}])[-1].get("end", 0) if result.get("segments") else 0
+        word_count = len(result.get("text", "").split())
+        segment_count = len(result.get("segments", []))
+        
+        st.markdown(f"""
+        <div class="stats-row">
+            <div class="stat-item">
+                <div class="stat-value">{format_timestamp(total_duration)}</div>
+                <div class="stat-label">Duration</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">{word_count:,}</div>
+                <div class="stat-label">Words</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-value">{segment_count}</div>
+                <div class="stat-label">Segments</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Transcript display
+        st.markdown('<div class="transcript-container">', unsafe_allow_html=True)
+        
+        for segment in result.get("segments", []):
+            timestamp = format_timestamp(segment["start"])
+            text = segment["text"].strip()
+            
+            col_ts, col_text = st.columns([1, 9])
+            with col_ts:
+                st.markdown(f'<span class="timestamp">[{timestamp}]</span>', unsafe_allow_html=True)
+            with col_text:
+                st.markdown(f'<span class="transcript-text">{text}</span>', unsafe_allow_html=True)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Download button
+        st.markdown("### 💾 Export")
+        
+        # Prepare download content
+        download_content = f"""AmarScribe Ultimate - Transcript
+{'='*50}
+Language: {target_language}
+Model: Whisper {model_size}
+Duration: {format_timestamp(total_duration)}
+Words: {word_count:,}
+{'='*50}
+
+{st.session_state.transcript_text}
+
+{'='*50}
+Generated by AmarScribe Ultimate
+Free, Unlimited Bengali Transcription
+"""
+        
+        st.download_button(
+            label="📥 Download Transcript as TXT",
+            data=download_content,
+            file_name=f"transcript_{uploaded_file.name.rsplit('.', 1)[0]}.txt",
+            mime="text/plain",
+            use_container_width=True
+        )
     
     # Footer
     st.markdown("---")
-    st.markdown(
-        "<p style='text-align: center; color: #9CA3AF; font-size: 0.85rem;'>"
-        "AmarScribe Pro • Built with Streamlit & ElevenLabs Scribe v2"
-        "</p>",
-        unsafe_allow_html=True
-    )
+    st.markdown("""
+    <div style="text-align: center; padding: 2rem 0; color: var(--text-secondary);">
+        <p style="font-family: 'Source Sans 3', sans-serif; font-size: 0.9rem;">
+            Built with ❤️ using OpenAI Whisper • 100% Free & Private
+        </p>
+        <p style="font-family: 'Tiro Bangla', serif; color: var(--accent-teal);">
+            বাংলা ভাষার জন্য তৈরি
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 if __name__ == "__main__":
