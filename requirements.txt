@@ -1,5 +1,6 @@
 streamlit
 moviepy==1.0.3
 soniox
+requests
 torch
 torchaudio
