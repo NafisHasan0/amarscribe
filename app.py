@@ -329,7 +329,23 @@ def extract_audio_from_video(video_bytes: bytes, file_extension: str) -> bytes:
 
 def transcribe_with_whisper(audio_path: str, model_name: str, language: str) -> dict:
     """Transcribe audio using local Whisper model."""
-    import whisper
+    try:
+        import whisper
+    except ImportError:
+        st.error("""
+        ❌ **Whisper module not found!**
+        
+        Please ensure you have installed the correct package:
+        ```
+        pip install openai-whisper
+        ```
+        
+        **Note:** On Streamlit Cloud, you also need to add these to `packages.txt`:
+        ```
+        ffmpeg
+        ```
+        """)
+        raise ImportError("openai-whisper package not installed correctly")
     
     # Load model
     model = whisper.load_model(model_name)
