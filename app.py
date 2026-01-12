@@ -240,15 +240,23 @@ def upload_file_to_soniox(session: requests.Session, audio_buffer: io.BytesIO) -
     """Upload audio file to Soniox Files API and return file_id."""
     audio_buffer.seek(0)
     
+    # Read the buffer content
+    audio_data = audio_buffer.read()
+    audio_buffer.seek(0)
+    
     files = {
-        'file': ('audio.mp3', audio_buffer, 'audio/mpeg')
+        'file': ('audio.mp3', audio_data, 'audio/mpeg')
     }
     
     response = session.post(
         f"{SONIOX_API_BASE}/v1/files",
         files=files
     )
-    response.raise_for_status()
+    
+    if not response.ok:
+        error_text = response.text
+        raise Exception(f"File upload failed ({response.status_code}): {error_text}")
+    
     result = response.json()
     return result['id']
 
@@ -258,7 +266,6 @@ def create_transcription(session: requests.Session, file_id: str = None, audio_u
     payload = {
         "model": "stt-async-preview",
         "language_hints": ["bn"],  # Bengali language hint
-        "enable_speaker_tags": True,  # Enable speaker diarization
     }
     
     if file_id:
@@ -270,7 +277,11 @@ def create_transcription(session: requests.Session, file_id: str = None, audio_u
         f"{SONIOX_API_BASE}/v1/transcriptions",
         json=payload
     )
-    response.raise_for_status()
+    
+    if not response.ok:
+        error_text = response.text
+        raise Exception(f"Create transcription failed ({response.status_code}): {error_text}")
+    
     result = response.json()
     return result['id']
 
@@ -292,9 +303,11 @@ def wait_for_transcription(session: requests.Session, transcription_id: str, pro
         
         if status == 'completed':
             return transcription
-        elif status == 'failed':
-            error_msg = transcription.get('error', 'Unknown error')
-            raise Exception(f"Transcription failed: {error_msg}")
+        elif status == 'error':
+            error_msg = transcription.get('error_message') or 'Unknown error'
+            error_type = transcription.get('error_type') or 'unknown'
+            # Return the full transcription object so we can see all error details
+            raise Exception(f"Transcription error ({error_type}): {error_msg}\nFull response: {transcription}")
         
         time.sleep(1)
         attempt += 1
@@ -461,7 +474,8 @@ def transcribe_with_soniox(audio_buffer: io.BytesIO, api_key: str, progress_plac
                 'queued': '⏳',
                 'processing': '🔄',
                 'transcribing': '🧠',
-                'completed': '✅'
+                'completed': '✅',
+                'error': '❌'
             }.get(status.lower(), '🔄')
             progress_placeholder.info(f"{status_emoji} Status: {status.upper()} (waiting {attempt}s)...")
         
