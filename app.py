@@ -9,17 +9,10 @@ import streamlit as st
 import io
 import tempfile
 import os
+import time
+import re
+import requests
 from datetime import timedelta
-
-# Soniox SDK imports - using flexible import structure
-try:
-    from soniox.speech_service import SpeechClient
-    from soniox.transcribe_file import transcribe_file_short
-except ImportError:
-    try:
-        from soniox.client import Client as SpeechClient
-    except ImportError:
-        SpeechClient = None
 
 # MoviePy for video processing
 from moviepy.editor import VideoFileClip
@@ -126,11 +119,6 @@ st.markdown("""
         margin-top: 0.3rem;
     }
     
-    /* Sidebar styling */
-    .sidebar .sidebar-content {
-        background: #f8f9fa;
-    }
-    
     /* Success/Error messages */
     .success-box {
         background: #d4edda;
@@ -147,15 +135,15 @@ st.markdown("""
         border-radius: 10px;
         color: #721c24;
     }
-    
-    /* File uploader enhancement */
-    .stFileUploader {
-        border: 2px dashed #2d5a87;
-        border-radius: 15px;
-        padding: 1rem;
-    }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ============================================================================
+# SONIOX API CONFIGURATION
+# ============================================================================
+
+SONIOX_API_BASE = "https://api.soniox.com"
 
 
 # ============================================================================
@@ -166,8 +154,7 @@ def format_timestamp(seconds: float) -> str:
     """Convert seconds to MM:SS format."""
     if seconds is None:
         return "00:00"
-    td = timedelta(seconds=seconds)
-    total_seconds = int(td.total_seconds())
+    total_seconds = int(seconds)
     minutes = total_seconds // 60
     secs = total_seconds % 60
     return f"{minutes:02d}:{secs:02d}"
@@ -177,8 +164,7 @@ def format_timestamp_full(seconds: float) -> str:
     """Convert seconds to HH:MM:SS format for longer videos."""
     if seconds is None:
         return "00:00:00"
-    td = timedelta(seconds=seconds)
-    total_seconds = int(td.total_seconds())
+    total_seconds = int(seconds)
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
     secs = total_seconds % 60
@@ -187,11 +173,14 @@ def format_timestamp_full(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
-def get_speaker_name(speaker_id: int) -> str:
+def get_speaker_name(speaker_id) -> str:
     """Generate a friendly speaker name from speaker ID."""
-    if speaker_id is None or speaker_id < 0:
-        return "বক্তা"  # "Speaker" in Bengali
-    return f"বক্তা {speaker_id + 1}"  # "Speaker 1", "Speaker 2", etc.
+    if speaker_id is None or speaker_id == 0 or speaker_id == "0":
+        return "বক্তা ১"  # "Speaker 1" in Bengali
+    try:
+        return f"বক্তা {int(speaker_id)}"  # "Speaker N" in Bengali
+    except:
+        return f"বক্তা {speaker_id}"
 
 
 def extract_audio_to_buffer(video_file) -> io.BytesIO:
@@ -247,13 +236,150 @@ def extract_audio_to_buffer(video_file) -> io.BytesIO:
     return audio_buffer
 
 
-def group_words_into_sentences(words: list) -> list:
-    """
-    Group individual words into meaningful sentence chunks.
-    Uses punctuation and timing gaps to determine sentence boundaries.
-    """
-    if not words:
+def upload_file_to_soniox(session: requests.Session, audio_buffer: io.BytesIO) -> str:
+    """Upload audio file to Soniox Files API and return file_id."""
+    audio_buffer.seek(0)
+    
+    files = {
+        'file': ('audio.mp3', audio_buffer, 'audio/mpeg')
+    }
+    
+    response = session.post(
+        f"{SONIOX_API_BASE}/v1/files",
+        files=files
+    )
+    response.raise_for_status()
+    result = response.json()
+    return result['id']
+
+
+def create_transcription(session: requests.Session, file_id: str = None, audio_url: str = None) -> str:
+    """Create a transcription job and return transcription_id."""
+    payload = {
+        "model": "stt-async-preview",
+        "language_hints": ["bn"],  # Bengali language hint
+        "enable_speaker_tags": True,  # Enable speaker diarization
+    }
+    
+    if file_id:
+        payload["file_id"] = file_id
+    elif audio_url:
+        payload["audio_url"] = audio_url
+    
+    response = session.post(
+        f"{SONIOX_API_BASE}/v1/transcriptions",
+        json=payload
+    )
+    response.raise_for_status()
+    result = response.json()
+    return result['id']
+
+
+def wait_for_transcription(session: requests.Session, transcription_id: str, progress_callback=None) -> dict:
+    """Poll for transcription status until completed."""
+    max_attempts = 300  # 5 minutes max wait
+    attempt = 0
+    
+    while attempt < max_attempts:
+        response = session.get(f"{SONIOX_API_BASE}/v1/transcriptions/{transcription_id}")
+        response.raise_for_status()
+        transcription = response.json()
+        
+        status = transcription.get('status', 'unknown')
+        
+        if progress_callback:
+            progress_callback(status, attempt)
+        
+        if status == 'completed':
+            return transcription
+        elif status == 'failed':
+            error_msg = transcription.get('error', 'Unknown error')
+            raise Exception(f"Transcription failed: {error_msg}")
+        
+        time.sleep(1)
+        attempt += 1
+    
+    raise Exception("Transcription timed out")
+
+
+def get_transcript(session: requests.Session, transcription_id: str) -> dict:
+    """Get the transcript for a completed transcription."""
+    response = session.get(f"{SONIOX_API_BASE}/v1/transcriptions/{transcription_id}/transcript")
+    response.raise_for_status()
+    return response.json()
+
+
+def delete_file(session: requests.Session, file_id: str):
+    """Delete uploaded file from Soniox."""
+    try:
+        session.delete(f"{SONIOX_API_BASE}/v1/files/{file_id}")
+    except:
+        pass  # Ignore errors on cleanup
+
+
+def parse_transcript_tokens(transcript: dict) -> list:
+    """Parse transcript tokens into structured segments with speaker info."""
+    tokens = transcript.get('tokens', [])
+    
+    segments = []
+    current_segment = {
+        'text': [],
+        'start_time': None,
+        'end_time': None,
+        'speaker': None
+    }
+    
+    current_speaker = None
+    
+    for token in tokens:
+        text = token.get('text', '')
+        start_ms = token.get('start_ms', 0)
+        end_ms = token.get('end_ms', 0)
+        
+        # Check for speaker tag (format: spk:N)
+        speaker_match = re.match(r'^spk:(\d+)$', text)
+        if speaker_match:
+            # Save current segment if it has content
+            if current_segment['text']:
+                current_segment['text'] = ''.join(current_segment['text']).strip()
+                if current_segment['text']:
+                    segments.append(current_segment.copy())
+            
+            # Start new segment with new speaker
+            current_speaker = speaker_match.group(1)
+            current_segment = {
+                'text': [],
+                'start_time': None,
+                'end_time': None,
+                'speaker': current_speaker
+            }
+            continue
+        
+        # Add text to current segment
+        if text:
+            if current_segment['start_time'] is None:
+                current_segment['start_time'] = start_ms / 1000.0
+                current_segment['speaker'] = current_speaker or '1'
+            
+            current_segment['text'].append(text)
+            current_segment['end_time'] = end_ms / 1000.0
+    
+    # Add final segment
+    if current_segment['text']:
+        current_segment['text'] = ''.join(current_segment['text']).strip()
+        if current_segment['text']:
+            segments.append(current_segment)
+    
+    return segments
+
+
+def group_into_sentences(segments: list) -> list:
+    """Group segments into sentence-level chunks."""
+    if not segments:
         return []
+    
+    # Bengali sentence-ending punctuation
+    sentence_enders = {'।', '?', '!', '.', '।।'}
     
     sentences = []
     current_sentence = {
@@ -263,244 +389,134 @@ def group_words_into_sentences(words: list) -> list:
         'speaker': None
     }
     
-    # Bengali sentence-ending punctuation
-    sentence_enders = {'।', '?', '!', '.', '।।', '?', '!'}
-    
-    for word in words:
-        word_text = word.get('text', '').strip()
-        word_start = word.get('start_time', 0)
-        word_end = word.get('end_time', 0)
-        word_speaker = word.get('speaker', 0)
+    for segment in segments:
+        text = segment['text']
+        words = text.split()
         
-        if not word_text:
-            continue
-        
-        # Start new sentence if speaker changes
-        if current_sentence['speaker'] is not None and word_speaker != current_sentence['speaker']:
-            if current_sentence['text']:
+        for i, word in enumerate(words):
+            # Handle speaker change
+            if current_sentence['speaker'] is not None and segment['speaker'] != current_sentence['speaker']:
+                if current_sentence['text']:
+                    current_sentence['text'] = ' '.join(current_sentence['text'])
+                    sentences.append(current_sentence.copy())
+                current_sentence = {
+                    'text': [],
+                    'start_time': segment['start_time'],
+                    'end_time': segment['end_time'],
+                    'speaker': segment['speaker']
+                }
+            
+            # Initialize
+            if current_sentence['start_time'] is None:
+                current_sentence['start_time'] = segment['start_time']
+                current_sentence['speaker'] = segment['speaker']
+            
+            current_sentence['text'].append(word)
+            current_sentence['end_time'] = segment['end_time']
+            
+            # Check for sentence end
+            if any(word.endswith(p) for p in sentence_enders):
                 current_sentence['text'] = ' '.join(current_sentence['text'])
                 sentences.append(current_sentence.copy())
-            current_sentence = {
-                'text': [],
-                'start_time': word_start,
-                'end_time': word_end,
-                'speaker': word_speaker
-            }
-        
-        # Initialize sentence timing
-        if current_sentence['start_time'] is None:
-            current_sentence['start_time'] = word_start
-            current_sentence['speaker'] = word_speaker
-        
-        current_sentence['text'].append(word_text)
-        current_sentence['end_time'] = word_end
-        
-        # Check for sentence-ending punctuation
-        if any(word_text.endswith(p) for p in sentence_enders):
-            current_sentence['text'] = ' '.join(current_sentence['text'])
-            sentences.append(current_sentence.copy())
-            current_sentence = {
-                'text': [],
-                'start_time': None,
-                'end_time': None,
-                'speaker': None
-            }
+                current_sentence = {
+                    'text': [],
+                    'start_time': None,
+                    'end_time': None,
+                    'speaker': segment['speaker']
+                }
     
-    # Add any remaining words as final sentence
+    # Add remaining text
     if current_sentence['text']:
         current_sentence['text'] = ' '.join(current_sentence['text'])
         sentences.append(current_sentence)
     
+    # If no sentence boundaries found, return original segments
+    if not sentences:
+        return segments
+    
     return sentences
 
 
-def transcribe_with_soniox(audio_buffer: io.BytesIO, api_key: str) -> dict:
+def transcribe_with_soniox(audio_buffer: io.BytesIO, api_key: str, progress_placeholder) -> dict:
     """
-    Transcribe audio using Soniox API with Bengali language and speaker diarization.
-    Returns structured transcription result.
+    Transcribe audio using Soniox REST API.
     """
+    session = requests.Session()
+    session.headers["Authorization"] = f"Bearer {api_key}"
+    
+    file_id = None
+    
     try:
-        # Import Soniox modules dynamically for flexibility
-        from soniox.speech_service import SpeechClient, set_api_key
-        from soniox.transcribe_file import transcribe_file_short
+        # Step 1: Upload file
+        progress_placeholder.info("📤 Uploading audio to Soniox...")
+        file_id = upload_file_to_soniox(session, audio_buffer)
         
-        # Set the API key
-        set_api_key(api_key)
+        # Step 2: Create transcription
+        progress_placeholder.info("🎯 Starting transcription with Bengali language...")
+        transcription_id = create_transcription(session, file_id=file_id)
         
-        # Save buffer to temp file (Soniox SDK requires file path)
-        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_file:
-            tmp_file.write(audio_buffer.read())
-            tmp_file_path = tmp_file.name
+        # Step 3: Wait for completion
+        def update_progress(status, attempt):
+            status_emoji = {
+                'queued': '⏳',
+                'processing': '🔄',
+                'transcribing': '🧠',
+                'completed': '✅'
+            }.get(status.lower(), '🔄')
+            progress_placeholder.info(f"{status_emoji} Status: {status.upper()} (waiting {attempt}s)...")
         
-        try:
-            # Perform transcription with speaker diarization
-            result = transcribe_file_short(
-                tmp_file_path,
-                model="en_v2",  # Soniox's multilingual model
-                language_hints=["bn"],  # Bengali hint
-                enable_speaker_diarization=True,
-                min_num_speakers=1,
-                max_num_speakers=10
-            )
-            
-            return {
-                'success': True,
-                'result': result
-            }
-        finally:
-            # Clean up temp file
-            if os.path.exists(tmp_file_path):
-                os.unlink(tmp_file_path)
-            
-    except ImportError:
-        # Try alternative import pattern for newer SDK versions
-        try:
-            import soniox
-            from soniox import transcribe
-            
-            # Save buffer to temp file
-            with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as tmp_file:
-                audio_buffer.seek(0)
-                tmp_file.write(audio_buffer.read())
-                tmp_file_path = tmp_file.name
-            
-            try:
-                # Initialize client with API key
-                client = soniox.Client(api_key=api_key)
-                
-                # Transcribe with Bengali and diarization
-                result = client.transcribe(
-                    tmp_file_path,
-                    language="bn",
-                    enable_speaker_diarization=True
-                )
-                
-                return {
-                    'success': True,
-                    'result': result
-                }
-            finally:
-                if os.path.exists(tmp_file_path):
-                    os.unlink(tmp_file_path)
-                    
-        except Exception as inner_e:
-            return {
-                'success': False,
-                'error': f'SDK import error. Please ensure soniox is properly installed: {str(inner_e)}',
-                'error_type': 'import'
-            }
-            
-    except Exception as e:
-        error_msg = str(e).lower()
+        progress_placeholder.info("🧠 Sending to Soniox AI... Transcribing for highest accuracy...")
+        transcription = wait_for_transcription(session, transcription_id, update_progress)
         
-        if 'invalid' in error_msg and ('key' in error_msg or 'api' in error_msg or 'auth' in error_msg):
+        # Step 4: Get transcript
+        progress_placeholder.info("📥 Retrieving transcript...")
+        transcript = get_transcript(session, transcription_id)
+        
+        return {
+            'success': True,
+            'transcript': transcript
+        }
+        
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response else 0
+        error_text = e.response.text if e.response else str(e)
+        
+        if status_code == 401 or status_code == 403:
             return {
                 'success': False,
                 'error': 'Invalid API Key. Please check your Soniox API key and try again.',
                 'error_type': 'auth'
             }
-        elif 'unauthorized' in error_msg or '401' in error_msg:
-            return {
-                'success': False,
-                'error': 'Invalid API Key. Please check your Soniox API key and try again.',
-                'error_type': 'auth'
-            }
-        elif 'quota' in error_msg or 'limit' in error_msg or 'exceeded' in error_msg:
+        elif status_code == 402:
             return {
                 'success': False,
                 'error': 'API quota exceeded. Please check your Soniox account balance.',
                 'error_type': 'quota'
             }
-        elif 'language' in error_msg:
+        elif 'language' in error_text.lower():
             return {
                 'success': False,
-                'error': 'Language configuration error. Bengali (bn) may require specific model.',
+                'error': f'Language configuration error: {error_text}',
                 'error_type': 'language'
             }
         else:
             return {
                 'success': False,
-                'error': f'Transcription failed: {str(e)}',
+                'error': f'API Error ({status_code}): {error_text}',
                 'error_type': 'general'
             }
-
-
-def parse_soniox_result(result) -> list:
-    """
-    Parse Soniox transcription result into structured word list.
-    Handles different response formats from the API.
-    """
-    words = []
     
-    try:
-        # Handle different result structures
-        if hasattr(result, 'words'):
-            for word in result.words:
-                words.append({
-                    'text': getattr(word, 'text', ''),
-                    'start_time': getattr(word, 'start_ms', 0) / 1000.0,
-                    'end_time': getattr(word, 'end_ms', 0) / 1000.0,
-                    'speaker': getattr(word, 'speaker', 0)
-                })
-        elif hasattr(result, 'segments'):
-            for segment in result.segments:
-                segment_speaker = getattr(segment, 'speaker', 0)
-                if hasattr(segment, 'words'):
-                    for word in segment.words:
-                        words.append({
-                            'text': getattr(word, 'text', ''),
-                            'start_time': getattr(word, 'start_ms', 0) / 1000.0,
-                            'end_time': getattr(word, 'end_ms', 0) / 1000.0,
-                            'speaker': getattr(word, 'speaker', segment_speaker)
-                        })
-                else:
-                    # Segment-level text without word timestamps
-                    words.append({
-                        'text': getattr(segment, 'text', ''),
-                        'start_time': getattr(segment, 'start_ms', 0) / 1000.0,
-                        'end_time': getattr(segment, 'end_ms', 0) / 1000.0,
-                        'speaker': segment_speaker
-                    })
-        elif hasattr(result, 'text'):
-            # Fallback for simple text response
-            words.append({
-                'text': result.text,
-                'start_time': 0,
-                'end_time': 0,
-                'speaker': 0
-            })
-        elif isinstance(result, dict):
-            # Handle dictionary response
-            if 'words' in result:
-                for word in result['words']:
-                    words.append({
-                        'text': word.get('text', ''),
-                        'start_time': word.get('start_ms', word.get('start_time', 0)) / 1000.0 if 'start_ms' in word else word.get('start_time', 0),
-                        'end_time': word.get('end_ms', word.get('end_time', 0)) / 1000.0 if 'end_ms' in word else word.get('end_time', 0),
-                        'speaker': word.get('speaker', 0)
-                    })
-            elif 'segments' in result:
-                for segment in result['segments']:
-                    segment_speaker = segment.get('speaker', 0)
-                    if 'words' in segment:
-                        for word in segment['words']:
-                            words.append({
-                                'text': word.get('text', ''),
-                                'start_time': word.get('start_ms', 0) / 1000.0,
-                                'end_time': word.get('end_ms', 0) / 1000.0,
-                                'speaker': word.get('speaker', segment_speaker)
-                            })
-                    else:
-                        words.append({
-                            'text': segment.get('text', ''),
-                            'start_time': segment.get('start_ms', 0) / 1000.0,
-                            'end_time': segment.get('end_ms', 0) / 1000.0,
-                            'speaker': segment_speaker
-                        })
     except Exception as e:
-        st.error(f"Error parsing transcription result: {str(e)}")
+        return {
+            'success': False,
+            'error': f'Transcription failed: {str(e)}',
+            'error_type': 'general'
+        }
     
-    return words
+    finally:
+        # Cleanup: delete uploaded file
+        if file_id:
+            delete_file(session, file_id)
 
 
 def generate_transcript_text(sentences: list) -> str:
@@ -513,15 +529,15 @@ def generate_transcript_text(sentences: list) -> str:
     
     current_speaker = None
     for sentence in sentences:
-        timestamp = format_timestamp_full(sentence['start_time'])
-        speaker = get_speaker_name(sentence['speaker'])
-        text = sentence['text']
+        timestamp = format_timestamp_full(sentence.get('start_time', 0))
+        speaker = get_speaker_name(sentence.get('speaker'))
+        text = sentence.get('text', '')
         
         # Add speaker header if changed
-        if sentence['speaker'] != current_speaker:
+        if sentence.get('speaker') != current_speaker:
             lines.append("")
             lines.append(f"--- {speaker} ---")
-            current_speaker = sentence['speaker']
+            current_speaker = sentence.get('speaker')
         
         lines.append(f"[{timestamp}] {text}")
     
@@ -570,23 +586,8 @@ def main():
         
         # Language setting (default Bengali)
         st.markdown("### 🌐 Language Settings")
-        language = st.selectbox(
-            "Transcription Language",
-            options=["bn (Bengali)", "bn-BD (Bengali - Bangladesh)", "bn-IN (Bengali - India)"],
-            index=0,
-            help="Bengali is the default language for AmarScribe"
-        )
         st.info("🇧🇩 Optimized for Bengali (বাংলা)")
-        
-        st.markdown("---")
-        
-        # Advanced settings
-        st.markdown("### 🎛️ Advanced Options")
-        enable_diarization = st.checkbox(
-            "Enable Speaker Diarization",
-            value=True,
-            help="Identify and label different speakers in the audio"
-        )
+        st.caption("Soniox uses language hints to optimize for Bengali transcription")
         
         st.markdown("---")
         
@@ -604,6 +605,11 @@ def main():
         - 📥 Export to TXT
         - 🔒 Secure processing
         """)
+        
+        st.markdown("---")
+        st.markdown("### 💰 Pricing")
+        st.caption("~$0.10/hour (async transcription)")
+        st.caption("[Get API Key](https://console.soniox.com)")
     
     # Main content area
     st.markdown("### 📤 Upload Your Video")
@@ -621,7 +627,7 @@ def main():
             st.markdown(f"""
             <div class="stat-card">
                 <div class="stat-value">📹</div>
-                <div class="stat-label">{uploaded_file.name[:20]}...</div>
+                <div class="stat-label">{uploaded_file.name[:20]}{'...' if len(uploaded_file.name) > 20 else ''}</div>
             </div>
             """, unsafe_allow_html=True)
         with col2:
@@ -648,44 +654,49 @@ def main():
                 st.error("❌ Please enter your Soniox API key in the sidebar.")
             else:
                 # Process the video
+                progress_placeholder = st.empty()
+                
                 try:
                     # Step 1: Extract audio
-                    with st.spinner("🎬 Extracting audio from video..."):
-                        uploaded_file.seek(0)  # Reset file position
-                        audio_buffer = extract_audio_to_buffer(uploaded_file)
-                        st.success("✓ Audio extracted successfully")
+                    progress_placeholder.info("🎬 Extracting audio from video...")
+                    uploaded_file.seek(0)  # Reset file position
+                    audio_buffer = extract_audio_to_buffer(uploaded_file)
+                    progress_placeholder.success("✓ Audio extracted successfully")
                     
                     # Step 2: Transcribe with Soniox
-                    with st.spinner("🧠 Sending to Soniox AI... Transcribing for highest accuracy..."):
-                        transcription_result = transcribe_with_soniox(audio_buffer, api_key)
+                    result = transcribe_with_soniox(audio_buffer, api_key, progress_placeholder)
                     
-                    if not transcription_result['success']:
-                        if transcription_result['error_type'] == 'auth':
-                            st.error(f"🔐 {transcription_result['error']}")
-                        elif transcription_result['error_type'] == 'quota':
-                            st.error(f"💳 {transcription_result['error']}")
+                    if not result['success']:
+                        error_type = result.get('error_type', 'general')
+                        if error_type == 'auth':
+                            st.error(f"🔐 {result['error']}")
+                        elif error_type == 'quota':
+                            st.error(f"💳 {result['error']}")
+                        elif error_type == 'language':
+                            st.error(f"🌐 {result['error']}")
                         else:
-                            st.error(f"❌ {transcription_result['error']}")
+                            st.error(f"❌ {result['error']}")
                     else:
-                        st.success("✓ Transcription completed!")
+                        progress_placeholder.success("✅ Transcription completed!")
                         
-                        # Parse the result
-                        words = parse_soniox_result(transcription_result['result'])
+                        # Parse the transcript
+                        transcript = result['transcript']
+                        segments = parse_transcript_tokens(transcript)
                         
-                        if not words:
+                        if not segments:
                             st.warning("⚠️ No speech detected in the audio.")
                         else:
                             # Group into sentences
-                            sentences = group_words_into_sentences(words)
+                            sentences = group_into_sentences(segments)
                             
                             # Store in session state
                             st.session_state['sentences'] = sentences
                             st.session_state['transcript_ready'] = True
                             
                             # Calculate stats
-                            total_duration = max(s['end_time'] for s in sentences) if sentences else 0
-                            unique_speakers = len(set(s['speaker'] for s in sentences if s['speaker'] is not None))
-                            total_words = sum(len(s['text'].split()) for s in sentences)
+                            total_duration = max(s.get('end_time', 0) for s in sentences) if sentences else 0
+                            unique_speakers = len(set(s.get('speaker') for s in sentences if s.get('speaker')))
+                            total_words = sum(len(s.get('text', '').split()) for s in sentences)
                             
                             # Display stats
                             st.markdown("### 📊 Transcription Statistics")
@@ -693,7 +704,7 @@ def main():
                             with stat_col1:
                                 st.metric("Duration", format_timestamp_full(total_duration))
                             with stat_col2:
-                                st.metric("Speakers", unique_speakers)
+                                st.metric("Speakers", unique_speakers if unique_speakers > 0 else 1)
                             with stat_col3:
                                 st.metric("Segments", len(sentences))
                             with stat_col4:
@@ -726,9 +737,9 @@ def main():
         
         # Display each segment
         for i, sentence in enumerate(sentences):
-            timestamp = format_timestamp_full(sentence['start_time'])
-            speaker = get_speaker_name(sentence['speaker'])
-            text = sentence['text']
+            timestamp = format_timestamp_full(sentence.get('start_time', 0))
+            speaker = get_speaker_name(sentence.get('speaker'))
+            text = sentence.get('text', '')
             
             st.markdown(f"""
             <div class="transcript-segment">
